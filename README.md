@@ -14,7 +14,18 @@ pnpm dev
 bun dev
 ```
 
+Backend (PocketBase):
+
+```powershell
+cd "c:\Users\sid\Downloads\REDBOX-main (1)\REDBOX-main\Pocketbase"
+./pocketbase.exe serve
+```
+
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+
+Environment:
+
+- If using the Google Maps picker, set `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` in `.env.local` before `npm run dev`.
 
 You can start editing the page by modifying `app/page.js`. The page auto-updates as you edit the file.
 
