@@ -2,6 +2,7 @@
 
 import { useRef, useState, useEffect } from "react";
 import PocketBase from "pocketbase";
+import bcrypt from "bcryptjs";
 
 // --------------------- CRYPTOGRAPHY UTILITIES (Web Crypto API) ---------------------
 // Text Encoder for key derivation
@@ -11,6 +12,8 @@ const enc = new TextEncoder();
 function toBase64(bytes) {
   return btoa(String.fromCharCode(...new Uint8Array(bytes))); 
 }
+
+const GEO_RADIUS_METERS = 500;
 
 // Key Derivation Function (PBKDF2) - Derives a secure key from a passphrase
 async function deriveKey(passphrase, salt) {
@@ -32,13 +35,30 @@ async function deriveKey(passphrase, salt) {
 }
 
 export default function VaultLayout({ children, vaultName }) {
-  const vaultDisplayName = vaultName || "Vault";
+  const vaultId = vaultName; // vaultName is actually the vault ID
   const fileInputRef = useRef(null);
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [modalMessage, setModalMessage] = useState("");
   const [selectedFile, setSelectedFile] = useState(null);
   const [showVaultSecurityModal, setShowVaultSecurityModal] = useState(false);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [showGeolocationModal, setShowGeolocationModal] = useState(false);
+  const [showTimeModal, setShowTimeModal] = useState(false);
+  const [vault, setVault] = useState(null);
+  const [vaultAccessGranted, setVaultAccessGranted] = useState(false);
+  const [passwordInput, setPasswordInput] = useState("");
+  const [geoLat, setGeoLat] = useState("");
+  const [geoLng, setGeoLng] = useState("");
+  const [geoRadius, setGeoRadius] = useState(String(GEO_RADIUS_METERS));
+  const [geoPassword, setGeoPassword] = useState("");
+  const [unlockAt, setUnlockAt] = useState("");
+  const [timePassword, setTimePassword] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const mapRef = useRef(null);
+  const markerRef = useRef(null);
+  const circleRef = useRef(null);
 
   const pb = new PocketBase("http://127.0.0.1:8090");
 
@@ -52,13 +72,37 @@ export default function VaultLayout({ children, vaultName }) {
     return () => unsubscribe();
   }, []);
 
+  // Fetch vault details
+  useEffect(() => {
+    const fetchVault = async () => {
+      if (!vaultId || !user?.id) return;
+
+      try {
+        const vaultData = await pb.collection("vaults").getOne(vaultId);
+        setVault(vaultData);
+        
+        // Check if vault has security enabled
+        if (vaultData.password_enabled || vaultData.geo_enabled || vaultData.time_enabled) {
+          setVaultAccessGranted(false); // Require authentication
+        } else {
+          setVaultAccessGranted(true); // No security, grant access
+        }
+      } catch (err) {
+        console.error("Failed to fetch vault:", err);
+        setModalMessage("Failed to load vault details.");
+      }
+    };
+
+    fetchVault();
+  }, [vaultId, user?.id]);
+
   useEffect(() => {
     const fetchFiles = async () => {
-      if (!user?.id) return;
+      if (!user?.id || !vaultAccessGranted || !vaultId) return;
 
       try {
         const existingFiles = await pb.collection("file_info").getFullList({
-          filter: `owner="${user.id}"`,
+          filter: `vault_id="${vaultId}"`,
         });
 
         const mappedFiles = existingFiles.map(f => ({
@@ -84,7 +128,7 @@ export default function VaultLayout({ children, vaultName }) {
     };
 
     fetchFiles();
-  }, [user?.id]);
+  }, [user?.id, vaultAccessGranted, vaultId]);
 
   const handleFileChange = (event) => {
     const selectedFiles = Array.from(event.target.files).map(f => ({
@@ -119,8 +163,8 @@ export default function VaultLayout({ children, vaultName }) {
         formData.append("iv", "");
         formData.append("encryption_id", "N/A"); 
         formData.append("encryption_key", "N/A");
+        formData.append("vault_id", vaultId);
         formData.append("file", file.file);
-        formData.append("owner", user.id);
 
         const createdFile = await pb.collection("file_info").create(formData);
 
@@ -147,72 +191,418 @@ export default function VaultLayout({ children, vaultName }) {
     }
   };
 
-  // --------------------- ENCRYPTION LOGIC ---------------------
-  const handleEncrypt = async (file) => {
-    if (!file || file.is_encrypted) {
-      setModalMessage("File is already encrypted.");
+  // Security validation functions
+  const validatePassword = async (inputPassword) => {
+    if (!vault?.password_hash) return false;
+    return await bcrypt.compare(inputPassword, vault.password_hash);
+  };
+
+  const validateGeolocation = () => {
+    if (!vault?.geo_enabled) return true;
+    
+    return new Promise((resolve) => {
+      if (!navigator.geolocation) {
+        resolve(false);
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const userLat = position.coords.latitude;
+          const userLng = position.coords.longitude;
+          const vaultLat = vault.geo_lat;
+          const vaultLng = vault.geo_lng;
+          const radius = vault.geo_radius || GEO_RADIUS_METERS;
+
+          // Calculate distance using Haversine formula
+          const R = 6371e3; // Earth's radius in meters
+          const φ1 = userLat * Math.PI / 180;
+          const φ2 = vaultLat * Math.PI / 180;
+          const Δφ = (vaultLat - userLat) * Math.PI / 180;
+          const Δλ = (vaultLng - userLng) * Math.PI / 180;
+
+          const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
+                    Math.cos(φ1) * Math.cos(φ2) *
+                    Math.sin(Δλ/2) * Math.sin(Δλ/2);
+          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+
+          const distance = R * c;
+          resolve(distance <= radius);
+        },
+        () => resolve(false)
+      );
+    });
+  };
+
+  const handleMapSelection = async (lat, lng) => {
+    setGeoLat(lat.toFixed(6));
+    setGeoLng(lng.toFixed(6));
+    setGeoRadius(String(GEO_RADIUS_METERS));
+
+    if (!mapRef.current) return;
+
+    try {
+      const L = (await import("leaflet")).default;
+
+      // Update or create marker
+      if (markerRef.current) {
+        markerRef.current.setLatLng([lat, lng]);
+      } else {
+        markerRef.current = L.marker([lat, lng]).addTo(mapRef.current);
+      }
+
+      // Update or create circle
+      if (circleRef.current) {
+        circleRef.current.setLatLng([lat, lng]);
+      } else {
+        circleRef.current = L.circle([lat, lng], {
+          radius: GEO_RADIUS_METERS,
+          color: "#e50914",
+          fillColor: "#e50914",
+          fillOpacity: 0.15,
+        }).addTo(mapRef.current);
+      }
+
+      mapRef.current.setView([lat, lng], 15);
+    } catch (err) {
+      console.error("Error updating map:", err);
+    }
+  };
+
+  const fillCurrentLocation = () => {
+    if (!navigator.geolocation) {
+      setModalMessage("❌ Geolocation is not supported on this device.");
       return;
     }
 
-    const passphrase = prompt("Enter a strong passphrase to encrypt this file:");
-    if (!passphrase) return;
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords;
+        handleMapSelection(latitude, longitude);
+      },
+      () => setModalMessage("❌ Unable to fetch current location."),
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  };
 
-    setModalMessage(`Encrypting file: ${file.file_name}...`);
+  const handleSearch = async () => {
+    if (!searchQuery.trim()) return;
 
     try {
-      const fileUrl = `${pb.baseUrl}/api/files/${file.collectionId}/${file.id}/${file.stored_file_name}`;
-      const response = await fetch(fileUrl);
-      if (!response.ok) throw new Error("Failed to fetch file for encryption.");
-      
-      const fileBuf = await response.arrayBuffer(); 
-      
-      const salt = crypto.getRandomValues(new Uint8Array(16));
-      const iv = crypto.getRandomValues(new Uint8Array(12));
-      
-      const key = await deriveKey(passphrase, salt);
-      
-      const ciphertext = await crypto.subtle.encrypt(
-        { name: "AES-GCM", iv },
-        key,
-        fileBuf
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}`
       );
-      
-      const encryptedBlob = new Blob([ciphertext], { type: "application/octet-stream" });
-      const encryptedFile = new File([encryptedBlob], `${file.file_name}.enc`, { type: "application/octet-stream" });
-      
-      const formData = new FormData();
-      formData.append("file", encryptedFile); 
-      formData.append("is_encrypted", true);
-      formData.append("salt", toBase64(salt)); 
-      formData.append("iv", toBase64(iv)); 
-      
-      const updatedRecord = await pb.collection("file_info").update(file.id, formData);
-      
-      setModalMessage(`✅ File '${file.file_name}' successfully encrypted!`);
-      
-      setFiles(prev => prev.map(f => 
-        f.id === file.id 
-        ? { 
-            ...f, 
-            is_encrypted: true, 
-            salt: updatedRecord.salt,
-            iv: updatedRecord.iv,
-            stored_file_name: updatedRecord.file,
-            file_name: `${f.file_name} (Encrypted)`,
-          }
-        : f
-      ));
-      
-    } catch (error) {
-      console.error("Encryption failed:", error);
-      setModalMessage("❌ Encryption failed. Check console.");
+      const results = await response.json();
+
+      if (results.length > 0) {
+        const { lat, lon } = results[0];
+        handleMapSelection(parseFloat(lat), parseFloat(lon));
+      } else {
+        setModalMessage("❌ Location not found. Try another search.");
+      }
+    } catch (err) {
+      console.error("Search error:", err);
+      setModalMessage("❌ Search failed. Please try again.");
     }
   };
+
+  const checkVaultAccess = async () => {
+    if (!vault) return false;
+
+    // Time gate check first
+    if (vault.time_enabled) {
+      const now = new Date();
+      const unlockTime = vault.unlock_at ? new Date(vault.unlock_at) : null;
+
+      if (!unlockTime || Number.isNaN(unlockTime.getTime())) {
+        setModalMessage("❌ Unlock time is not set correctly.");
+        return false;
+      }
+
+      if (now < unlockTime) {
+        setModalMessage(`⏳ Available after ${unlockTime.toLocaleString()}`);
+        return false;
+      }
+    }
+
+    // Location check
+    if (vault.geo_enabled) {
+      const geoValid = await validateGeolocation();
+      if (!geoValid) {
+        setModalMessage("❌ Location requirement not met.");
+        return false;
+      }
+    }
+
+    // Password is always required when enabled
+    if (vault.password_enabled) {
+      const inputPassword = prompt("Enter vault password:");
+      if (!inputPassword) return false;
+      const passwordValid = await validatePassword(inputPassword);
+      if (!passwordValid) {
+        setModalMessage("❌ Incorrect password.");
+      }
+      return passwordValid;
+    }
+
+    return true;
+  };
+
+  // Security modal handlers
+  const handlePasswordSecurity = async () => {
+    const password = prompt("Set a password for this vault:");
+    if (!password) return;
+
+    try {
+      const hashedPassword = await bcrypt.hash(password, 12);
+      
+      await pb.collection("vaults").update(vaultId, {
+        password_enabled: true,
+        password_hash: hashedPassword,
+        geo_enabled: false,
+        geo_lat: null,
+        geo_lng: null,
+        geo_radius: null,
+        time_enabled: false,
+        unlock_at: null,
+      });
+
+      setVault(prev => ({ 
+        ...prev, 
+        password_enabled: true, 
+        password_hash: hashedPassword,
+        geo_enabled: false,
+        geo_lat: null,
+        geo_lng: null,
+        geo_radius: null,
+        time_enabled: false,
+        unlock_at: null,
+      }));
+      setModalMessage("✅ Password security enabled!");
+      setShowVaultSecurityModal(false);
+    } catch (err) {
+      console.error("Failed to set password:", err);
+      setModalMessage("❌ Failed to set password security.");
+    }
+  };
+
+  const handleGeolocationSecurity = async () => {
+    setShowVaultSecurityModal(false);
+    setShowGeolocationModal(true);
+    setShowTimeModal(false);
+  };
+
+  const handleTimeSecurity = () => {
+    setShowVaultSecurityModal(false);
+    setShowTimeModal(true);
+    setShowGeolocationModal(false);
+  };
+
+  const saveGeolocationSecurity = async () => {
+    const lat = parseFloat(geoLat);
+    const lng = parseFloat(geoLng);
+    const radius = GEO_RADIUS_METERS;
+
+    if (!geoPassword) {
+      setModalMessage("❌ Please enter a password for this vault.");
+      return;
+    }
+
+    if (isNaN(lat) || isNaN(lng)) {
+      setModalMessage("❌ Please pick a location on the map.");
+      return;
+    }
+
+    try {
+      const hashedPassword = await bcrypt.hash(geoPassword, 12);
+
+      await pb.collection("vaults").update(vaultId, {
+        geo_enabled: true,
+        geo_lat: lat,
+        geo_lng: lng,
+        geo_radius: radius,
+        time_enabled: false,
+        unlock_at: null,
+        password_enabled: true,
+        password_hash: hashedPassword,
+      });
+
+      setVault(prev => ({ 
+        ...prev, 
+        geo_enabled: true, 
+        geo_lat: lat, 
+        geo_lng: lng, 
+        geo_radius: radius,
+        time_enabled: false,
+        unlock_at: null,
+        password_enabled: true,
+        password_hash: hashedPassword,
+      }));
+      
+      setModalMessage("✅ Geolocation security enabled!");
+      setShowGeolocationModal(false);
+      setGeoLat("");
+      setGeoLng("");
+      setGeoRadius(String(GEO_RADIUS_METERS));
+      setGeoPassword("");
+    } catch (err) {
+      console.error("Failed to set geolocation:", err);
+      setModalMessage("❌ Failed to set geolocation security.");
+    }
+  };
+
+  const saveTimeSecurity = async () => {
+    if (!unlockAt) {
+      setModalMessage("❌ Please select an unlock date and time.");
+      return;
+    }
+
+    if (!timePassword) {
+      setModalMessage("❌ Please enter a password for this vault.");
+      return;
+    }
+
+    const unlockDate = new Date(unlockAt);
+
+    if (Number.isNaN(unlockDate.getTime())) {
+      setModalMessage("❌ Invalid unlock date/time.");
+      return;
+    }
+
+    try {
+      const hashedPassword = await bcrypt.hash(timePassword, 12);
+
+      await pb.collection("vaults").update(vaultId, {
+        time_enabled: true,
+        unlock_at: unlockDate.toISOString(),
+        geo_enabled: false,
+        geo_lat: null,
+        geo_lng: null,
+        geo_radius: null,
+        password_enabled: true,
+        password_hash: hashedPassword,
+      });
+
+      setVault(prev => ({
+        ...prev,
+        time_enabled: true,
+        unlock_at: unlockDate.toISOString(),
+        geo_enabled: false,
+        geo_lat: null,
+        geo_lng: null,
+        geo_radius: null,
+        password_enabled: true,
+        password_hash: hashedPassword,
+      }));
+
+      setModalMessage("✅ Time lock enabled. Vault opens after the scheduled time with password.");
+      setShowTimeModal(false);
+      setUnlockAt("");
+      setTimePassword("");
+    } catch (err) {
+      console.error("Failed to set time security:", err);
+      setModalMessage("❌ Failed to set time security.");
+    }
+  };
+
+  // Initialize Leaflet map when modal opens
+  useEffect(() => {
+    if (!showGeolocationModal) {
+      // Clean up map when modal closes
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+        markerRef.current = null;
+        circleRef.current = null;
+      }
+      return;
+    }
+
+    // Don't reinitialize if map already exists
+    if (mapRef.current) return;
+
+    // Delay map creation to ensure DOM is ready
+    const initMap = async () => {
+      try {
+        // Dynamic import to avoid SSR issues
+        const L = (await import("leaflet")).default;
+        await import("leaflet/dist/leaflet.css");
+
+        // Fix default marker icon
+        delete L.Icon.Default.prototype._getIconUrl;
+        L.Icon.Default.mergeOptions({
+          iconRetinaUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png",
+          iconUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png",
+          shadowUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png",
+        });
+
+        // Create map
+        const map = L.map("geo-map", {
+          center: [20, 0],
+          zoom: 2,
+        });
+
+        // Add tile layer
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          attribution: "© OpenStreetMap",
+          maxZoom: 19,
+        }).addTo(map);
+
+        // Add click handler
+        map.on("click", (e) => {
+          handleMapSelection(e.latlng.lat, e.latlng.lng);
+        });
+
+        mapRef.current = map;
+
+        // Try to get user's current location
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              const { latitude, longitude } = pos.coords;
+              handleMapSelection(latitude, longitude);
+            },
+            () => {},
+            { enableHighAccuracy: true, timeout: 6000 }
+          );
+        }
+      } catch (err) {
+        console.error("Map initialization error:", err);
+      }
+    };
+
+    setTimeout(initMap, 100);
+
+    return () => {
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+        markerRef.current = null;
+        circleRef.current = null;
+      }
+    };
+  }, [showGeolocationModal]);
+
+  // Check access on component mount if security is enabled
+  useEffect(() => {
+    const checkAccess = async () => {
+      if (vault && (vault.password_enabled || vault.geo_enabled) && !vaultAccessGranted) {
+        const accessGranted = await checkVaultAccess();
+        setVaultAccessGranted(accessGranted);
+        
+        if (!accessGranted) {
+          setModalMessage("❌ Access denied. Security validation failed.");
+        }
+      }
+    };
+
+    checkAccess();
+  }, [vault]);
 
   return (
     <div style={styles.page}>
       <header style={styles.topbar}>
-        <div style={styles.vaultName}>{vaultDisplayName}</div>
+        <div style={styles.vaultName}>{vault?.name || vaultId}</div>
         <button style={styles.profileBtn}>Profile</button>
       </header>
 
@@ -220,12 +610,29 @@ export default function VaultLayout({ children, vaultName }) {
         <div
           style={styles.fileGrid}
           onClick={(e) => {
-            if (e.target === e.currentTarget) {
+            if (e.target === e.currentTarget && vaultAccessGranted) {
               fileInputRef.current?.click();
             }
           }}
         >
-          {files.length === 0 ? (
+          {!vaultAccessGranted ? (
+            <div style={styles.accessDenied}>
+              <div style={styles.lockIcon}>🔒</div>
+              <div style={styles.accessText}>Vault Access Required</div>
+              <button 
+                style={styles.unlockBtn} 
+                onClick={async () => {
+                  const accessGranted = await checkVaultAccess();
+                  setVaultAccessGranted(accessGranted);
+                  if (!accessGranted) {
+                    setModalMessage("❌ Access denied. Security validation failed.");
+                  }
+                }}
+              >
+                Unlock Vault
+              </button>
+            </div>
+          ) : files.length === 0 ? (
             <div style={styles.uploadContent}>
               <div style={styles.arrow}>↑</div>
               <div style={styles.uploadText}>Click to Add Files</div>
@@ -390,7 +797,7 @@ export default function VaultLayout({ children, vaultName }) {
         style={styles.addVaultBtn}
         onClick={() => setShowVaultSecurityModal(true)}
       >
-        Add Vault Security
+        Configure Vault Security
       </button>
 
       {/* Vault Security Modal */}
@@ -401,12 +808,106 @@ export default function VaultLayout({ children, vaultName }) {
         >
           <div style={styles.vaultModal} onClick={(e) => e.stopPropagation()}>
             <h3 style={{ color: "#e50914", marginBottom: "20px" }}>Vault Security Options</h3>
-            <button style={styles.vaultOptionBtn} onClick={() => alert("Password Security selected")}>
-              Password Security
+            <button style={styles.vaultOptionBtn} onClick={handleTimeSecurity}>
+              Time Lock + Password
             </button>
-            <button style={styles.vaultOptionBtn} onClick={() => alert("Location/Time Trigger selected")}>
-              Location/Time Trigger
+            <button style={styles.vaultOptionBtn} onClick={handleGeolocationSecurity}>
+              Location Lock + Password
             </button>
+            <button style={styles.vaultOptionBtn} onClick={handlePasswordSecurity}>
+              Password Only
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Time Security Modal */}
+      {showTimeModal && (
+        <div
+          style={styles.modalOverlay}
+          onClick={() => setShowTimeModal(false)}
+        >
+          <div style={styles.geoModal} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ color: "#e50914", marginBottom: "20px" }}>Schedule Unlock Time</h3>
+            <div style={{ display: "flex", flexDirection: "column", gap: "12px", width: "100%" }}>
+              <input
+                type="datetime-local"
+                value={unlockAt}
+                onChange={(e) => setUnlockAt(e.target.value)}
+                style={styles.inputField}
+              />
+              <input
+                type="password"
+                placeholder="Password required at unlock"
+                value={timePassword}
+                onChange={(e) => setTimePassword(e.target.value)}
+                style={styles.inputField}
+              />
+              <div style={{ display: "flex", gap: "10px", justifyContent: "center", marginTop: "20px" }}>
+                <button style={styles.saveBtn} onClick={saveTimeSecurity}>
+                  Save
+                </button>
+                <button style={styles.cancelBtn} onClick={() => setShowTimeModal(false)}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Geolocation Security Modal */}
+      {showGeolocationModal && (
+        <div
+          style={styles.modalOverlay}
+          onClick={() => setShowGeolocationModal(false)}
+        >
+          <div style={styles.geoModal} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ color: "#e50914", marginBottom: "20px" }}>Set Geolocation Security</h3>
+            <div style={{ display: "flex", flexDirection: "column", gap: "12px", width: "100%" }}>
+              <div style={styles.mapHint}>Search or click on the map to set the vault location (500m radius enforced).</div>
+              
+              {/* Search Box */}
+              <div style={{ display: "flex", gap: "8px" }}>
+                <input
+                  style={{ ...styles.inputField, flex: 1 }}
+                  placeholder="Search location (e.g., New York, USA)"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+                />
+                <button style={styles.saveBtn} onClick={handleSearch}>
+                  Search
+                </button>
+              </div>
+
+              {/* Leaflet Map */}
+              <div id="geo-map" style={styles.mapContainer} />
+              
+              <div style={styles.coordsRow}>
+                <span>Lat: {geoLat || "-"}</span>
+                <span>Lng: {geoLng || "-"}</span>
+                <span>Radius: {geoRadius || GEO_RADIUS_METERS} m</span>
+                <button style={styles.secondaryBtn} onClick={fillCurrentLocation}>
+                  Use Current Location
+                </button>
+              </div>
+              <input
+                type="password"
+                placeholder="Password required at unlock"
+                value={geoPassword}
+                onChange={(e) => setGeoPassword(e.target.value)}
+                style={styles.inputField}
+              />
+              <div style={{ display: "flex", gap: "10px", justifyContent: "center", marginTop: "20px" }}>
+                <button style={styles.saveBtn} onClick={saveGeolocationSecurity}>
+                  Save
+                </button>
+                <button style={styles.cancelBtn} onClick={() => setShowGeolocationModal(false)}>
+                  Cancel
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -436,5 +937,21 @@ const styles = {
   modalImage: { maxWidth: "100%", maxHeight: "400px", marginBottom: "16px", borderRadius: "8px" },
   modalFileIcon: { fontSize: "80px", marginBottom: "16px" },
   modalFileName: { fontSize: "18px", color: "#ccc", marginBottom: "24px" },
-  modalBtn: { position: "fixed", top: "50%", transform: "translateY(-50%)", padding: "12px 20px", background: "#e50914", border: "none", borderRadius: "999px", color: "white", cursor: "pointer", fontWeight: "600", zIndex: 10000 }, addVaultBtn: {position: "absolute", bottom: "20px", right:"20px",padding: "10px 16px", background: "#e50914", border: "none", borderRadius: "999px", color: "white",fontWeight: "600", cursor: "pointer", boxShadow: "0 0 10px rgba(229,9,20,0.4)", zIndex: 5000,},vaultModal: {background: "#1a1a1a", padding: "24px", borderRadius: "12px", display: "flex",flexDirection: "column", alignItems: "center", gap: "16px",} , vaultOptionBtn: {padding: "12px 20px",background: "#e50914", border: "none", borderRadius: "999px", color: "white", fontWeight: "600",cursor: "pointer", width: "220px",}, 
+  modalBtn: { position: "fixed", top: "50%", transform: "translateY(-50%)", padding: "12px 20px", background: "#e50914", border: "none", borderRadius: "999px", color: "white", cursor: "pointer", fontWeight: "600", zIndex: 10000 }, 
+  addVaultBtn: {position: "absolute", bottom: "20px", right:"20px",padding: "10px 16px", background: "#e50914", border: "none", borderRadius: "999px", color: "white",fontWeight: "600", cursor: "pointer", boxShadow: "0 0 10px rgba(229,9,20,0.4)", zIndex: 5000,},
+  vaultModal: {background: "#1a1a1a", padding: "24px", borderRadius: "12px", display: "flex",flexDirection: "column", alignItems: "center", gap: "16px",},
+  vaultOptionBtn: {padding: "12px 20px",background: "#e50914", border: "none", borderRadius: "999px", color: "white", fontWeight: "600",cursor: "pointer", width: "220px",},
+  modalOverlay: { position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh", backgroundColor: "rgba(0,0,0,0.75)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9998 },
+  geoModal: {background: "#1a1a1a", padding: "24px", borderRadius: "12px", display: "flex", flexDirection: "column", alignItems: "center", gap: "16px", minWidth: "300px"},
+  mapContainer: { width: "100%", height: "320px", borderRadius: "12px", overflow: "hidden", border: "1px solid #333" },
+  mapHint: { fontSize: "13px", color: "#aaa" },
+  coordsRow: { display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "center", justifyContent: "space-between", fontSize: "13px", color: "#ccc" },
+  inputField: {padding: "10px", borderRadius: "6px", border: "1px solid #333", background: "#2a2a2a", color: "white", width: "100%", boxSizing: "border-box"},
+  secondaryBtn: {padding: "10px 12px", background: "#222", border: "1px solid #444", borderRadius: "8px", color: "white", fontWeight: "600", cursor: "pointer"},
+  saveBtn: {padding: "10px 20px", background: "#e50914", border: "none", borderRadius: "999px", color: "white", fontWeight: "600", cursor: "pointer"},
+  cancelBtn: {padding: "10px 20px", background: "#666", border: "none", borderRadius: "999px", color: "white", fontWeight: "600", cursor: "pointer"},
+  accessDenied: { display: "flex", flexDirection: "column", alignItems: "center", gap: "12px", color: "#eee" },
+  lockIcon: { fontSize: "46px" },
+  accessText: { fontSize: "18px", fontWeight: "600" },
+  unlockBtn: { padding: "10px 18px", background: "#e50914", border: "none", borderRadius: "10px", color: "white", fontWeight: "700", cursor: "pointer", boxShadow: "0 0 10px rgba(229,9,20,0.35)" },
 };
