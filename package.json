@@ -22,8 +22,7 @@
     "pocketbase": "^0.26.2",
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "react-phone-number-input": "^3.4.14",
-    "twilio": "^5.11.2",
+    "react-phone-number-input": "^3.4.16",
     "web": "^0.0.2"
   },
   "devDependencies": {

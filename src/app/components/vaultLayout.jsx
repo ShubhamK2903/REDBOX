@@ -1236,4 +1236,3 @@ const styles = {
   unlockBtn: { padding: "10px 18px", background: "#e50914", border: "none", borderRadius: "10px", color: "white", fontWeight: "700", cursor: "pointer", boxShadow: "0 0 10px rgba(229,9,20,0.35)" },
   vaultInput: { width: "100%", padding: "12px 16px", borderRadius: "999px", border: "1px solid rgba(229,9,20,0.45)", background: "#0f0f0f", color: "white", outline: "none", marginBottom: "12px", textAlign: "center" },
 };
-
