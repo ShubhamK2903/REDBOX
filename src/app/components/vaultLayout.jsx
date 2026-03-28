@@ -75,8 +75,10 @@ export default function VaultLayout({ children, vaultName }) {
       const nominees = await pb
         .collection("vault_nominees")
         .getList(1, 1, {
-          filter: `vault=${vaultId}`,
+          filter: `vault_id="${vaultId}"`,
         });
+
+      console.log("Nominee result:", nominees);
 
       return nominees.totalItems > 0;
     } catch (error) {
@@ -1054,9 +1056,13 @@ export default function VaultLayout({ children, vaultName }) {
                         return;
                       }
 
+                      const approvalLink = `http://192.168.1.5:3000/nominee-approval?vaultId=${vaultId}&nominee=${encodeURIComponent(n.name)}&owner=${encodeURIComponent(user?.name || "Owner")}`;
                       sendSMS(
                         n.phone,
-                        `Hi ${n.name}, you have been added as a nominee for vault '${vault?.name || vaultId}'. No action is required yet.`
+                        `Hi ${n.name}, ${user?.name || "Owner"} has requested your approval for vault '${vault?.name || vaultId}'.
+
+                        Open this link:
+                      ${approvalLink}`
                       );
                     }
                   });
