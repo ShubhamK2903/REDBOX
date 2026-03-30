@@ -1,12 +1,15 @@
 'use client';
 
 import { useMemo, useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import PocketBase from 'pocketbase';
 import VaultLayout from '../components/vaultLayout';
+import { getAvatarSeed, getAvatarStyle, getAvatarUrl } from '../lib/avatar';
 
 const pb = new PocketBase('http://127.0.0.1:8090');
 
 export default function VaultsPage() {
+  const router = useRouter();
   const [vaults, setVaults] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [modalMessage, setModalMessage] = useState("");
@@ -15,14 +18,60 @@ export default function VaultsPage() {
   const [hoveredSlot, setHoveredSlot] = useState(null);
 
   const [displayName, setDisplayName] = useState('Guest');
-  const user = pb.authStore?.model || null;
+  const [user, setUser] = useState(pb.authStore.model || null);
+  const avatarUrl = getAvatarUrl(getAvatarStyle(user), getAvatarSeed(user));
+
+  const handlePocketBaseError = (err, fallbackMessage) => {
+    const status = err?.status;
+    const msg = String(err?.message || '');
+
+    if (status === 401 || status === 403) {
+      pb.authStore.clear();
+      setUser(null);
+      router.push('/auth');
+      return;
+    }
+
+    if (status === 0 || msg.toLowerCase().includes('failed to fetch')) {
+      setModalMessage('Cannot connect to PocketBase. Please make sure backend is running.');
+      return;
+    }
+
+    if (fallbackMessage) {
+      setModalMessage(fallbackMessage);
+    }
+  };
 
   useEffect(() => {
     if (user) {
       const full = `${user.first_name || ''} ${user.last_name || ''}`.trim();
       setDisplayName(full || user.email || 'User');
+    } else {
+      setDisplayName('Guest');
     }
   }, [user]);
+
+  useEffect(() => {
+    const unsubscribe = pb.authStore.onChange(() => {
+      setUser(pb.authStore.model || null);
+    });
+
+    const refreshUser = async () => {
+      const current = pb.authStore.model;
+      if (!current?.id || !pb.authStore.token) return;
+
+      try {
+        const latest = await pb.collection('users').getOne(current.id);
+        pb.authStore.save(pb.authStore.token, latest);
+        setUser(latest);
+      } catch (err) {
+        handlePocketBaseError(err, 'Failed to refresh profile data.');
+      }
+    };
+
+    refreshUser();
+    return () => unsubscribe();
+  }, []);
 
   // ----------------------------
   // Fetch vaults from PocketBase
@@ -51,7 +100,7 @@ export default function VaultsPage() {
 
         setVaults(loadedVaultsWithSlots);
       } catch (err) {
-        console.error("Failed to fetch vaults:", err);
+        handlePocketBaseError(err, 'Failed to load vaults.');
       }
     };
 
@@ -178,7 +227,9 @@ export default function VaultsPage() {
       <div style={styles.topbar}>
         <div style={styles.userBox}>{displayName}</div>
         <div style={styles.brand}>RedBox</div>
-        <div style={styles.profilePill}>Profile</div>
+        <button style={styles.profilePill} onClick={() => router.push('/profile')}>
+          <img src={avatarUrl} alt="Profile" style={styles.profileAvatar} />
+        </button>
       </div>
 
       {/* Horizontal Vault Section */}
@@ -473,13 +524,27 @@ const styles = {
     letterSpacing: '0.5px',
   },
   profilePill: {
-    fontSize: '14px',
-    padding: '8px 12px',
+    width: '52px',
+    height: '52px',
     background: '#1a1a1a',
     borderRadius: '999px',
     border: '1px solid rgba(229,9,20,0.45)',
     boxShadow: '0 0 10px rgba(229,9,20,0.25)',
     cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: 'white',
+    padding: 0,
+    overflow: 'hidden',
+  },
+  profileAvatar: {
+    width: '100%',
+    height: '100%',
+    borderRadius: '999px',
+    border: 'none',
+    objectFit: 'cover',
+    background: '#0f0f0f',
   },
   horizontalSection: {
     width: '100%',
