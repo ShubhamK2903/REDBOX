@@ -131,6 +131,43 @@ export default function VaultsPage() {
     }
   };
 
+  const handleDeleteVault = async (vault, index) => {
+    if (!user?.id) {
+      setModalMessage("You must be logged in to delete vaults.");
+      return;
+    }
+
+    if (!vault?.registered || !vault?.id) return;
+
+    const shouldDelete = window.confirm(
+      `Delete vault '${vault.title}' and all files inside it? This cannot be undone.`
+    );
+    if (!shouldDelete) return;
+
+    try {
+      const linkedFiles = await pb.collection("file_info").getFullList({
+        filter: `vault_id="${vault.id}"`,
+      });
+
+      for (const fileRecord of linkedFiles) {
+        await pb.collection("file_info").delete(fileRecord.id);
+      }
+
+      await pb.collection("vaults").delete(vault.id);
+
+      setVaults((prev) => {
+        const copy = [...prev];
+        copy[index] = null;
+        return copy;
+      });
+
+      setModalMessage("Vault and all files deleted successfully.");
+    } catch (err) {
+      console.error("Failed to delete vault:", err);
+      setModalMessage("Failed to delete vault. Please try again.");
+    }
+  };
+
   return (
     <div
       style={styles.page}
@@ -221,6 +258,28 @@ export default function VaultsPage() {
                         });
                       }}
                     >
+                      {vault.registered && (
+                        <button
+                          style={styles.deleteVaultBtn}
+                          aria-label={`Delete ${vault.title}`}
+                          title="Delete vault"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteVault(vault, i);
+                          }}
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                              d="M3 6h18M9 6V4h6v2m-8 0l1 14h8l1-14"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                        </button>
+                      )}
                       {vault.title}
 
                       {/* Tooltip on hover */}
@@ -487,6 +546,22 @@ const styles = {
     marginTop: '8px',
     fontSize: '14px',
     opacity: 0.85,
+  },
+  deleteVaultBtn: {
+    position: 'absolute',
+    top: '10px',
+    right: '10px',
+    width: '28px',
+    height: '28px',
+    borderRadius: '999px',
+    border: '1px solid rgba(229,9,20,0.55)',
+    background: '#260708',
+    color: '#ffd5d8',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    boxShadow: '0 0 8px rgba(229,9,20,0.35)',
   },
   modalOverlay: {
     position: 'fixed',

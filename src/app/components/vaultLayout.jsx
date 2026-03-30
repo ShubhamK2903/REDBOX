@@ -164,6 +164,7 @@ export default function VaultLayout({ children, vaultName }) {
 
   const handleFileChange = (event) => {
     const selectedFiles = Array.from(event.target.files).map(f => ({
+      tempId: `local-${crypto.randomUUID()}`,
       file: f,
       uploaded: false,
       file_name: f.name,
@@ -220,6 +221,40 @@ export default function VaultLayout({ children, vaultName }) {
       setModalMessage("Upload failed. Check console.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleDeleteFile = async (fileToDelete) => {
+    if (!fileToDelete) return;
+
+    const shouldDelete = window.confirm(`Delete '${fileToDelete.file_name}'? This cannot be undone.`);
+    if (!shouldDelete) return;
+
+    try {
+      if (fileToDelete.uploaded && fileToDelete.id) {
+        await pb.collection("file_info").delete(fileToDelete.id);
+      }
+
+      setFiles((prev) =>
+        prev.filter((f) => {
+          if (fileToDelete.uploaded) {
+            return f.id !== fileToDelete.id;
+          }
+          return f.tempId !== fileToDelete.tempId;
+        })
+      );
+
+      if (
+        (fileToDelete.uploaded && selectedFile?.id === fileToDelete.id) ||
+        (!fileToDelete.uploaded && selectedFile?.tempId === fileToDelete.tempId)
+      ) {
+        setSelectedFile(null);
+      }
+
+      setModalMessage("✅ File deleted successfully.");
+    } catch (err) {
+      console.error("Delete failed:", err);
+      setModalMessage("❌ Failed to delete file.");
     }
   };
 
@@ -734,7 +769,7 @@ export default function VaultLayout({ children, vaultName }) {
           ) : (
             files.map((file) => (
               <div
-                key={file.id}
+                key={file.id || file.tempId}
                 style={styles.fileCard}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -750,6 +785,15 @@ export default function VaultLayout({ children, vaultName }) {
                 ) : (
                   <div style={styles.fileIcon}>📄</div>
                 )}
+                <button
+                  style={styles.deleteFileBtn}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDeleteFile(file);
+                  }}
+                >
+                  Delete
+                </button>
                 <div style={styles.fileName}>{file.file_name}</div>
               </div>
             ))
@@ -833,6 +877,12 @@ export default function VaultLayout({ children, vaultName }) {
             }}
           >
             Download
+          </button>
+          <button
+            style={{ ...styles.modalBtn, bottom: "40px", top: "auto", left: "50%", transform: "translateX(-50%)", background: "#5a0a10" }}
+            onClick={() => handleDeleteFile(selectedFile)}
+          >
+            Delete
           </button>
         </div>
       )}
@@ -1207,6 +1257,7 @@ const styles = {
   uploadText: { fontSize: "18px", fontWeight: "600", color: "#ccc" },
   fileGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: "16px", width: "100%" },
   fileCard: { background: "#2a2a2a", borderRadius: "8px", padding: "10px", textAlign: "center", color: "white", fontSize: "14px", wordBreak: "break-word", cursor: "zoom-in" },
+  deleteFileBtn: { marginTop: "8px", padding: "6px 10px", background: "#5a0a10", border: "1px solid rgba(229,9,20,0.45)", borderRadius: "999px", color: "#ffd6d9", cursor: "pointer", fontSize: "12px", fontWeight: "600" },
   filePreview: { width: "100%", height: "100px", objectFit: "cover", borderRadius: "6px", marginBottom: "8px" },
   fileIcon: { fontSize: "40px", marginBottom: "8px" },
   fileName: { fontSize: "12px", color: "#ccc" },
