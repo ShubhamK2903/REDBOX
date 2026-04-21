@@ -9,6 +9,7 @@ const pb = new PocketBase('http://127.0.0.1:8090'); // PocketBase server URL
 export default function AuthPage() {
   const router = useRouter(); 
   const [isRegistering, setIsRegistering] = useState(false);
+  const [isForgotPassword, setIsForgotPassword] = useState(false);
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
@@ -16,6 +17,7 @@ export default function AuthPage() {
   const [securityQuestion, setSecurityQuestion] = useState('');
   const [securityAnswer, setSecurityAnswer] = useState('');
   const [notification, setNotification] = useState(''); // notification message
+  const [isSendingReset, setIsSendingReset] = useState(false);
 
   const showNotification = (msg) => {
     setNotification(msg);
@@ -66,81 +68,151 @@ export default function AuthPage() {
     }
   };
 
+  const handleForgotPassword = async (e) => {
+    e.preventDefault();
+
+    if (!email.trim()) {
+      showNotification('Please enter your email address');
+      return;
+    }
+
+    try {
+      setIsSendingReset(true);
+      await pb.collection('users').requestPasswordReset(email.trim());
+      showNotification('If the email exists, a reset link has been sent.');
+    } catch (err) {
+      console.error(err);
+      showNotification('Unable to send reset email right now.');
+    } finally {
+      setIsSendingReset(false);
+    }
+  };
+
+  const switchToRegister = () => {
+    setIsForgotPassword(false);
+    setIsRegistering(true);
+  };
+
+  const switchToLogin = () => {
+    setIsForgotPassword(false);
+    setIsRegistering(false);
+  };
+
+  const openForgotPassword = () => {
+    setIsRegistering(false);
+    setIsForgotPassword(true);
+  };
+
   return (
     <div style={styles.container}>
       <div style={styles.card}>
-        <h1 style={styles.title}>{isRegistering ? 'Register' : 'Login'} to RedBox</h1>
+        <h1 style={styles.title}>
+          {isForgotPassword ? 'Reset Password' : isRegistering ? 'Register' : 'Login'} to RedBox
+        </h1>
 
         {notification && <div style={styles.notification}>{notification}</div>}
 
-        <form onSubmit={handleSubmit} style={styles.form}>
-          {isRegistering && (
-            <>
+        {isForgotPassword ? (
+          <form onSubmit={handleForgotPassword} style={styles.form}>
+            <input
+              type="email"
+              placeholder="Enter your account email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              style={styles.input}
+            />
+
+            <button type="submit" style={styles.button} disabled={isSendingReset}>
+              {isSendingReset ? 'Sending...' : 'Send Reset Link'}
+            </button>
+
+            <p style={styles.switchText}>
+              Remembered your password?
+              <span onClick={switchToLogin} style={styles.link}>
+                Login
+              </span>
+            </p>
+          </form>
+        ) : (
+          <>
+            <form onSubmit={handleSubmit} style={styles.form}>
+              {isRegistering && (
+                <>
+                  <input
+                    type="text"
+                    placeholder="First Name"
+                    value={firstName}
+                    onChange={(e) => setFirstName(e.target.value)}
+                    style={styles.input}
+                  />
+                  <input
+                    type="text"
+                    placeholder="Last Name"
+                    value={lastName}
+                    onChange={(e) => setLastName(e.target.value)}
+                    style={styles.input}
+                  />
+                </>
+              )}
+
               <input
-                type="text"
-                placeholder="First Name"
-                value={firstName}
-                onChange={(e) => setFirstName(e.target.value)}
+                type="email"
+                placeholder="Email Address"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 style={styles.input}
               />
               <input
-                type="text"
-                placeholder="Last Name"
-                value={lastName}
-                onChange={(e) => setLastName(e.target.value)}
+                type="password"
+                placeholder="Password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
                 style={styles.input}
               />
-            </>
-          )}
 
-          <input
-            type="email"
-            placeholder="Email Address"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            style={styles.input}
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            style={styles.input}
-          />
+              <select
+                value={securityQuestion}
+                onChange={(e) => setSecurityQuestion(e.target.value)}
+                style={{ ...styles.input, color: 'grey' }}
+              >
+                <option value="" disabled hidden>
+                  Select Security Question
+                </option>
+                <option value="first_pet">What was your first pet's name?</option>
+                <option value="nickname">What is your childhood nickname?</option>
+                <option value="school">What was the name of your first school?</option>
+                <option value="hero">Who was your childhood hero?</option>
+              </select>
 
-          <select
-            value={securityQuestion}
-            onChange={(e) => setSecurityQuestion(e.target.value)}
-            style={{ ...styles.input, color: 'grey' }}
-          >
-            <option value="" disabled hidden>
-              Select Security Question
-            </option>
-            <option value="first_pet">What was your first pet's name?</option>
-            <option value="nickname">What is your childhood nickname?</option>
-            <option value="school">What was the name of your first school?</option>
-            <option value="hero">Who was your childhood hero?</option>
-          </select>
+              <input
+                type="text"
+                placeholder="Answer to Security Question"
+                value={securityAnswer}
+                onChange={(e) => setSecurityAnswer(e.target.value)}
+                style={styles.input}
+              />
 
-          <input
-            type="text"
-            placeholder="Answer to Security Question"
-            value={securityAnswer}
-            onChange={(e) => setSecurityAnswer(e.target.value)}
-            style={styles.input}
-          />
+              <button type="submit" style={styles.button}>
+                {isRegistering ? 'Create Account' : 'Login'}
+              </button>
+            </form>
 
-          <button type="submit" style={styles.button}>
-            {isRegistering ? 'Create Account' : 'Login'}
-          </button>
-        </form>
+            {!isRegistering && (
+              <p style={styles.switchText}>
+                <span onClick={openForgotPassword} style={styles.link}>
+                  Forgot password?
+                </span>
+              </p>
+            )}
 
-        <p style={styles.switchText}>
-          {isRegistering ? 'Already have an account?' : "Don't have an account?"}{' '}
-          <span onClick={() => setIsRegistering(!isRegistering)} style={styles.link}>
-            {isRegistering ? 'Login' : 'Register'}
-          </span>
-        </p>
+            <p style={styles.switchText}>
+              {isRegistering ? 'Already have an account?' : "Don't have an account?"}{' '}
+              <span onClick={isRegistering ? switchToLogin : switchToRegister} style={styles.link}>
+                {isRegistering ? 'Login' : 'Register'}
+              </span>
+            </p>
+          </>
+        )}
       </div>
     </div>
   );

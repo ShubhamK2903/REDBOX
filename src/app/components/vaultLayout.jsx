@@ -1,12 +1,14 @@
 "use client";
 
 import { useRef, useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import PocketBase from "pocketbase";
 import bcrypt from "bcryptjs";
 import PhoneInput from "react-phone-number-input";
 import "react-phone-number-input/style.css";
 import { isValidPhoneNumber } from "react-phone-number-input";
 import { sendSMS } from "../utils/sendSms";
+import { getAvatarSeed, getAvatarStyle, getAvatarUrl } from "../lib/avatar";
 
 // --------------------- CRYPTOGRAPHY UTILITIES (Web Crypto API) ---------------------
 // Text Encoder for key derivation
@@ -39,6 +41,7 @@ async function deriveKey(passphrase, salt) {
 }
 
 export default function VaultLayout({ children, vaultName }) {
+  const router = useRouter();
   const vaultId = vaultName; // vaultName is actually the vault ID
   const fileInputRef = useRef(null);
   const [files, setFiles] = useState([]);
@@ -95,6 +98,28 @@ export default function VaultLayout({ children, vaultName }) {
   const pb = new PocketBase("http://127.0.0.1:8090");
 
   const [user, setUser] = useState(pb.authStore.model);
+  const avatarUrl = getAvatarUrl(getAvatarStyle(user), getAvatarSeed(user));
+
+  const handlePocketBaseError = (err, fallbackMessage) => {
+    const status = err?.status;
+    const msg = String(err?.message || '');
+
+    if (status === 401 || status === 403) {
+      pb.authStore.clear();
+      setUser(null);
+      router.push('/auth');
+      return;
+    }
+
+    if (status === 0 || msg.toLowerCase().includes('failed to fetch')) {
+      setModalMessage('Cannot connect to PocketBase. Please make sure backend is running.');
+      return;
+    }
+
+    if (fallbackMessage) {
+      setModalMessage(fallbackMessage);
+    }
+  };
 
   useEffect(() => {
     setUser(pb.authStore.model);
@@ -102,6 +127,23 @@ export default function VaultLayout({ children, vaultName }) {
       setUser(pb.authStore.model);
     });
     return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const refreshUser = async () => {
+      const current = pb.authStore.model;
+      if (!current?.id || !pb.authStore.token) return;
+
+      try {
+        const latest = await pb.collection("users").getOne(current.id);
+        pb.authStore.save(pb.authStore.token, latest);
+        setUser(latest);
+      } catch (err) {
+        handlePocketBaseError(err, 'Failed to refresh profile data.');
+      }
+    };
+
+    refreshUser();
   }, []);
 
   // Fetch vault details
@@ -164,6 +206,7 @@ export default function VaultLayout({ children, vaultName }) {
 
   const handleFileChange = (event) => {
     const selectedFiles = Array.from(event.target.files).map(f => ({
+      tempId: `local-${crypto.randomUUID()}`,
       file: f,
       uploaded: false,
       file_name: f.name,
@@ -220,6 +263,40 @@ export default function VaultLayout({ children, vaultName }) {
       setModalMessage("Upload failed. Check console.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleDeleteFile = async (fileToDelete) => {
+    if (!fileToDelete) return;
+
+    const shouldDelete = window.confirm(`Delete '${fileToDelete.file_name}'? This cannot be undone.`);
+    if (!shouldDelete) return;
+
+    try {
+      if (fileToDelete.uploaded && fileToDelete.id) {
+        await pb.collection("file_info").delete(fileToDelete.id);
+      }
+
+      setFiles((prev) =>
+        prev.filter((f) => {
+          if (fileToDelete.uploaded) {
+            return f.id !== fileToDelete.id;
+          }
+          return f.tempId !== fileToDelete.tempId;
+        })
+      );
+
+      if (
+        (fileToDelete.uploaded && selectedFile?.id === fileToDelete.id) ||
+        (!fileToDelete.uploaded && selectedFile?.tempId === fileToDelete.tempId)
+      ) {
+        setSelectedFile(null);
+      }
+
+      setModalMessage("✅ File deleted successfully.");
+    } catch (err) {
+      console.error("Delete failed:", err);
+      setModalMessage("❌ Failed to delete file.");
     }
   };
 
@@ -697,7 +774,9 @@ export default function VaultLayout({ children, vaultName }) {
     <div style={styles.page}>
       <header style={styles.topbar}>
         <div style={styles.vaultName}>{vault?.name || vaultId}</div>
-        <button style={styles.profileBtn}>Profile</button>
+        <button style={styles.profileBtn} onClick={() => router.push('/profile')}>
+          <img src={avatarUrl} alt="Profile" style={styles.profileAvatar} />
+        </button>
       </header>
 
       <section style={styles.bigSlot}>
@@ -734,7 +813,7 @@ export default function VaultLayout({ children, vaultName }) {
           ) : (
             files.map((file) => (
               <div
-                key={file.id}
+                key={file.id || file.tempId}
                 style={styles.fileCard}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -750,6 +829,15 @@ export default function VaultLayout({ children, vaultName }) {
                 ) : (
                   <div style={styles.fileIcon}>📄</div>
                 )}
+                <button
+                  style={styles.deleteFileBtn}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDeleteFile(file);
+                  }}
+                >
+                  Delete
+                </button>
                 <div style={styles.fileName}>{file.file_name}</div>
               </div>
             ))
@@ -833,6 +921,12 @@ export default function VaultLayout({ children, vaultName }) {
             }}
           >
             Download
+          </button>
+          <button
+            style={{ ...styles.modalBtn, bottom: "40px", top: "auto", left: "50%", transform: "translateX(-50%)", background: "#5a0a10" }}
+            onClick={() => handleDeleteFile(selectedFile)}
+          >
+            Delete
           </button>
         </div>
       )}
@@ -1200,13 +1294,15 @@ const styles = {
   page: { minHeight: "100vh", background: "black", color: "white", display: "flex", justifyContent: "center", flexDirection: "column", padding: "24px", boxSizing: "border-box" },
   topbar: { width: "100%", maxWidth: "1800px", display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "32px", paddingLeft: "24px", paddingRight: "0px", margin: "0 auto", boxSizing: "border-box" },
   vaultName: { fontFamily: "'Orbitron', sans-serif", fontSize: "28px", fontWeight: "bold", color: "#e50914", letterSpacing: "0.5px" },
-  profileBtn: { fontSize: "14px", padding: "8px 12px", background: "#1a1a1a", border: "1px solid rgba(229,9,20,0.45)", borderRadius: "999px", color: "white", cursor: "pointer", boxShadow: "0 0 10px rgba(229,9,20,0.25)" },
+  profileBtn: { width: "52px", height: "52px", padding: 0, background: "#1a1a1a", border: "1px solid rgba(229,9,20,0.45)", borderRadius: "999px", color: "white", cursor: "pointer", boxShadow: "0 0 10px rgba(229,9,20,0.25)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" },
+  profileAvatar: { width: "100%", height: "100%", borderRadius: "999px", border: "none", objectFit: "cover", background: "#0f0f0f" },
   bigSlot: { width: "100%", maxWidth: "1500px", minHeight: "300px", flex: 1, background: "#1a1a1a", border: "1px solid rgba(229,9,20,0.45)", borderRadius: "12px", padding: "20px", margin: "0 auto 32px", boxShadow: "0 0 14px rgba(229,9,20,0.25)", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", cursor: "crosshair", transition: "all 0.2s ease" },
   uploadContent: { textAlign: "center" },
   arrow: { fontSize: "48px", color: "#e50914", marginBottom: "12px" },
   uploadText: { fontSize: "18px", fontWeight: "600", color: "#ccc" },
   fileGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: "16px", width: "100%" },
   fileCard: { background: "#2a2a2a", borderRadius: "8px", padding: "10px", textAlign: "center", color: "white", fontSize: "14px", wordBreak: "break-word", cursor: "zoom-in" },
+  deleteFileBtn: { marginTop: "8px", padding: "6px 10px", background: "#5a0a10", border: "1px solid rgba(229,9,20,0.45)", borderRadius: "999px", color: "#ffd6d9", cursor: "pointer", fontSize: "12px", fontWeight: "600" },
   filePreview: { width: "100%", height: "100px", objectFit: "cover", borderRadius: "6px", marginBottom: "8px" },
   fileIcon: { fontSize: "40px", marginBottom: "8px" },
   fileName: { fontSize: "12px", color: "#ccc" },

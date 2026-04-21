@@ -1,12 +1,15 @@
 'use client';
 
 import { useMemo, useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import PocketBase from 'pocketbase';
 import VaultLayout from '../components/vaultLayout';
+import { getAvatarSeed, getAvatarStyle, getAvatarUrl } from '../lib/avatar';
 
 const pb = new PocketBase('http://127.0.0.1:8090');
 
 export default function VaultsPage() {
+  const router = useRouter();
   const [vaults, setVaults] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [modalMessage, setModalMessage] = useState("");
@@ -15,14 +18,60 @@ export default function VaultsPage() {
   const [hoveredSlot, setHoveredSlot] = useState(null);
 
   const [displayName, setDisplayName] = useState('Guest');
-  const user = pb.authStore?.model || null;
+  const [user, setUser] = useState(pb.authStore.model || null);
+  const avatarUrl = getAvatarUrl(getAvatarStyle(user), getAvatarSeed(user));
+
+  const handlePocketBaseError = (err, fallbackMessage) => {
+    const status = err?.status;
+    const msg = String(err?.message || '');
+
+    if (status === 401 || status === 403) {
+      pb.authStore.clear();
+      setUser(null);
+      router.push('/auth');
+      return;
+    }
+
+    if (status === 0 || msg.toLowerCase().includes('failed to fetch')) {
+      setModalMessage('Cannot connect to PocketBase. Please make sure backend is running.');
+      return;
+    }
+
+    if (fallbackMessage) {
+      setModalMessage(fallbackMessage);
+    }
+  };
 
   useEffect(() => {
     if (user) {
       const full = `${user.first_name || ''} ${user.last_name || ''}`.trim();
       setDisplayName(full || user.email || 'User');
+    } else {
+      setDisplayName('Guest');
     }
   }, [user]);
+
+  useEffect(() => {
+    const unsubscribe = pb.authStore.onChange(() => {
+      setUser(pb.authStore.model || null);
+    });
+
+    const refreshUser = async () => {
+      const current = pb.authStore.model;
+      if (!current?.id || !pb.authStore.token) return;
+
+      try {
+        const latest = await pb.collection('users').getOne(current.id);
+        pb.authStore.save(pb.authStore.token, latest);
+        setUser(latest);
+      } catch (err) {
+        handlePocketBaseError(err, 'Failed to refresh profile data.');
+      }
+    };
+
+    refreshUser();
+    return () => unsubscribe();
+  }, []);
 
   // ----------------------------
   // Fetch vaults from PocketBase
@@ -51,7 +100,7 @@ export default function VaultsPage() {
 
         setVaults(loadedVaultsWithSlots);
       } catch (err) {
-        console.error("Failed to fetch vaults:", err);
+        handlePocketBaseError(err, 'Failed to load vaults.');
       }
     };
 
@@ -131,6 +180,43 @@ export default function VaultsPage() {
     }
   };
 
+  const handleDeleteVault = async (vault, index) => {
+    if (!user?.id) {
+      setModalMessage("You must be logged in to delete vaults.");
+      return;
+    }
+
+    if (!vault?.registered || !vault?.id) return;
+
+    const shouldDelete = window.confirm(
+      `Delete vault '${vault.title}' and all files inside it? This cannot be undone.`
+    );
+    if (!shouldDelete) return;
+
+    try {
+      const linkedFiles = await pb.collection("file_info").getFullList({
+        filter: `vault_id="${vault.id}"`,
+      });
+
+      for (const fileRecord of linkedFiles) {
+        await pb.collection("file_info").delete(fileRecord.id);
+      }
+
+      await pb.collection("vaults").delete(vault.id);
+
+      setVaults((prev) => {
+        const copy = [...prev];
+        copy[index] = null;
+        return copy;
+      });
+
+      setModalMessage("Vault and all files deleted successfully.");
+    } catch (err) {
+      console.error("Failed to delete vault:", err);
+      setModalMessage("Failed to delete vault. Please try again.");
+    }
+  };
+
   return (
     <div
       style={styles.page}
@@ -141,7 +227,9 @@ export default function VaultsPage() {
       <div style={styles.topbar}>
         <div style={styles.userBox}>{displayName}</div>
         <div style={styles.brand}>RedBox</div>
-        <div style={styles.profilePill}>Profile</div>
+        <button style={styles.profilePill} onClick={() => router.push('/profile')}>
+          <img src={avatarUrl} alt="Profile" style={styles.profileAvatar} />
+        </button>
       </div>
 
       {/* Horizontal Vault Section */}
@@ -221,6 +309,28 @@ export default function VaultsPage() {
                         });
                       }}
                     >
+                      {vault.registered && (
+                        <button
+                          style={styles.deleteVaultBtn}
+                          aria-label={`Delete ${vault.title}`}
+                          title="Delete vault"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteVault(vault, i);
+                          }}
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                              d="M3 6h18M9 6V4h6v2m-8 0l1 14h8l1-14"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                        </button>
+                      )}
                       {vault.title}
 
                       {/* Tooltip on hover */}
@@ -414,13 +524,27 @@ const styles = {
     letterSpacing: '0.5px',
   },
   profilePill: {
-    fontSize: '14px',
-    padding: '8px 12px',
+    width: '52px',
+    height: '52px',
     background: '#1a1a1a',
     borderRadius: '999px',
     border: '1px solid rgba(229,9,20,0.45)',
     boxShadow: '0 0 10px rgba(229,9,20,0.25)',
     cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: 'white',
+    padding: 0,
+    overflow: 'hidden',
+  },
+  profileAvatar: {
+    width: '100%',
+    height: '100%',
+    borderRadius: '999px',
+    border: 'none',
+    objectFit: 'cover',
+    background: '#0f0f0f',
   },
   horizontalSection: {
     width: '100%',
@@ -487,6 +611,22 @@ const styles = {
     marginTop: '8px',
     fontSize: '14px',
     opacity: 0.85,
+  },
+  deleteVaultBtn: {
+    position: 'absolute',
+    top: '10px',
+    right: '10px',
+    width: '28px',
+    height: '28px',
+    borderRadius: '999px',
+    border: '1px solid rgba(229,9,20,0.55)',
+    background: '#260708',
+    color: '#ffd5d8',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    boxShadow: '0 0 8px rgba(229,9,20,0.35)',
   },
   modalOverlay: {
     position: 'fixed',

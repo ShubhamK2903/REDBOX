@@ -1,6 +1,6 @@
 "use client"; // make the entire page client-side
 
-import VaultLayout from "@/app/components/VaultLayout";
+import VaultLayout from "@/app/components/vaultLayout";
 import { useParams } from "next/navigation";
 
 export default function VaultPage() {
