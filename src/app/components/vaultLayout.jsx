@@ -675,6 +675,54 @@ export default function VaultLayout({ children, vaultName }) {
     }
   };
 
+  const handleDecrypt = async (file) => {
+    if (!file || !file.is_encrypted) {
+      setModalMessage("❌ File is not encrypted.");
+      return;
+    }
+
+    const passphrase = prompt("Enter passphrase to decrypt:");
+    if (!passphrase) return;
+
+    setModalMessage(`Decrypting file: ${file.file_name}...`);
+
+    try {
+      const fileUrl = `${pb.baseUrl}/api/files/${file.collectionId}/${file.id}/${file.stored_file_name}`;
+      const response = await fetch(fileUrl);
+      if (!response.ok) throw new Error("Failed to fetch encrypted file.");
+
+      const encryptedBuf = await response.arrayBuffer();
+
+      // Convert Base64 back to Uint8Array
+      const salt = Uint8Array.from(atob(file.salt), c => c.charCodeAt(0));
+      const iv = Uint8Array.from(atob(file.iv), c => c.charCodeAt(0));
+
+      const key = await deriveKey(passphrase, salt);
+
+      const decrypted = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv },
+        key,
+        encryptedBuf
+      );
+
+      const blob = new Blob([decrypted]);
+      const url = URL.createObjectURL(blob);
+
+      // Auto-download decrypted file
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = file.file_name.replace(" (Encrypted)", "");
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+
+      setModalMessage(`✅ File decrypted successfully!`);
+    } catch (err) {
+      console.error("Decryption failed:", err);
+      setModalMessage("❌ Incorrect passphrase or corrupted file.");
+    }
+  };
+
 
   // Initialize Leaflet map when modal opens
   useEffect(() => {
@@ -813,7 +861,7 @@ export default function VaultLayout({ children, vaultName }) {
           ) : (
             files.map((file) => (
               <div
-                key={file.id || file.tempId}
+                key={file.id}
                 style={styles.fileCard}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -829,15 +877,6 @@ export default function VaultLayout({ children, vaultName }) {
                 ) : (
                   <div style={styles.fileIcon}>📄</div>
                 )}
-                <button
-                  style={styles.deleteFileBtn}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleDeleteFile(file);
-                  }}
-                >
-                  Delete
-                </button>
                 <div style={styles.fileName}>{file.file_name}</div>
               </div>
             ))
@@ -885,12 +924,24 @@ export default function VaultLayout({ children, vaultName }) {
           </div>
 
           {/* Floating Buttons */}
-          <button
-            style={{ ...styles.modalBtn, left: "40px" }}
-            onClick={() => handleEncrypt(selectedFile)}
-          >
-            {selectedFile?.is_encrypted ? "Encrypted" : "Encrypt"}
-          </button>
+
+
+          /* LEFT BUTTON (Encrypt / Decrypt Toggle) */
+          {selectedFile?.is_encrypted ? (
+            <button
+              style={{ ...styles.modalBtn, left: "40px" }}
+              onClick={() => handleDecrypt(selectedFile)}
+            >
+              Decrypt
+            </button>
+          ) : (
+            <button
+              style={{ ...styles.modalBtn, left: "40px" }}
+              onClick={() => handleEncrypt(selectedFile)}
+            >
+              Encrypt
+            </button>
+          )}
           <button
             style={{ ...styles.modalBtn, right: "40px" }}
             onClick={async () => {
@@ -1331,4 +1382,27 @@ const styles = {
   accessText: { fontSize: "18px", fontWeight: "600" },
   unlockBtn: { padding: "10px 18px", background: "#e50914", border: "none", borderRadius: "10px", color: "white", fontWeight: "700", cursor: "pointer", boxShadow: "0 0 10px rgba(229,9,20,0.35)" },
   vaultInput: { width: "100%", padding: "12px 16px", borderRadius: "999px", border: "1px solid rgba(229,9,20,0.45)", background: "#0f0f0f", color: "white", outline: "none", marginBottom: "12px", textAlign: "center" },
+  previewWrapper: {
+  position: "relative",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+},
+decryptOverlayBtn: {
+  position: "absolute",
+  padding: "12px 20px",
+  background: "rgba(229,9,20,0.9)",
+  border: "none",
+  borderRadius: "999px",
+  color: "white",
+  fontWeight: "600",
+  cursor: "pointer",
+  opacity: 0,
+  transition: "opacity 0.3s ease",
+},
+
+// ADD THIS HOVER EFFECT
+previewWrapperHover: {
+  opacity: 1,
+}
 };

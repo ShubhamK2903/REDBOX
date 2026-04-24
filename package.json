@@ -19,10 +19,12 @@
     "libphonenumber-js": "^1.12.34",
     "lottie-react": "^2.4.1",
     "next": "15.4.3",
+    "nodemailer": "^8.0.5",
     "pocketbase": "^0.26.2",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-phone-number-input": "^3.4.16",
+    "twilio": "^5.13.1",
     "web": "^0.0.2"
   },
   "devDependencies": {

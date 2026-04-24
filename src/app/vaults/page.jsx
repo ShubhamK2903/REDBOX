@@ -465,7 +465,7 @@ export default function VaultsPage() {
           <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
             <h3 style={{ marginBottom: '16px' }}>Want to Create More Vaults ?</h3>
             <div style={styles.modalCards}>
-              <div style={{ textAlign: 'center' }}>Paisa de pehle</div>
+              <div style={{ textAlign: 'center' }}>Payment Required</div>
             </div>
             <button style={styles.closeBtn} onClick={() => setShowModal(false)}>
               Close
